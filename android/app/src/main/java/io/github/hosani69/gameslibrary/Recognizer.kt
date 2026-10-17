@@ -18,6 +18,8 @@ import kotlin.coroutines.resumeWithException
 import kotlin.math.max
 import kotlin.math.min
 
+fun Box.toRect() = Rect(left, top, right, bottom)
+
 /** On-device recognition with ML Kit's bundled models: works offline and costs nothing. */
 object Recognizer {
     private val detector by lazy {
@@ -48,8 +50,28 @@ object Recognizer {
         return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(degrees) }, true)
     }
 
-    /** Finds each separate item in the photo. Falls back to the whole photo when nothing stands out. */
-    suspend fun findItems(photo: Bitmap): List<Rect> {
+    /** Prepares the item finder on a small copy of the photo (fast, and enough detail to find edges). */
+    fun segmenter(photo: Bitmap): Pair<Segmenter, Double> {
+        val f = 480.0 / max(photo.width, photo.height)
+        val small = Bitmap.createScaledBitmap(photo, max(1, (photo.width * f).toInt()), max(1, (photo.height * f).toInt()), true)
+        val px = IntArray(small.width * small.height)
+        small.getPixels(px, 0, small.width, 0, 0, small.width, small.height)
+        return Segmenter(px, small.width, small.height) to (1.0 / f)
+    }
+
+    /**
+     * Finds each separate item in the photo. The edge-based finder handles items lying side by side;
+     * ML Kit's object detector is the second opinion; the whole photo is the last resort.
+     */
+    suspend fun findItems(photo: Bitmap, seg: Segmenter, scale: Double): List<Rect> {
+        val found = seg.items().map { it.scaled(scale).toRect() }
+        if (found.size >= 2) return found
+        val ml = runCatching { detectObjects(photo) }.getOrDefault(emptyList())
+        if (ml.size >= 2) return ml
+        return found.ifEmpty { ml.ifEmpty { listOf(Rect(0, 0, photo.width, photo.height)) } }
+    }
+
+    private suspend fun detectObjects(photo: Bitmap): List<Rect> {
         val area = photo.width.toLong() * photo.height
         val boxes = detector.process(InputImage.fromBitmap(photo, 0)).await()
             .map { it.boundingBox }
@@ -59,9 +81,7 @@ object Recognizer {
             if (acc.none { overlap(r, it) > 0.7 }) acc.add(r)
             acc
         }
-        if (kept.isEmpty()) return listOf(Rect(0, 0, photo.width, photo.height))
-        // Reading order: rows from top to bottom, left to right within a row.
-        val rowHeight = photo.height / 4
+        val rowHeight = max(1, photo.height / 4)
         return kept.sortedWith(compareBy({ it.centerY() / rowHeight }, { it.left }))
     }
 
