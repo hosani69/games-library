@@ -1,0 +1,19 @@
+{
+  "name": "games-library",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Games Library: catalogue games, consoles, soundtracks and books.",
+  "scripts": {
+    "www": "rm -rf www && mkdir www && cp -r index.html manifest.webmanifest sw.js css js icons vendor www/",
+    "sync": "npm run www && npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.2",
+    "@capacitor/core": "8.5.2",
+    "@capacitor/filesystem": "8.1.3",
+    "@capacitor/share": "8.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.2"
+  }
+}

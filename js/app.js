@@ -647,7 +647,29 @@ function download(blob, name) {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
 
+const native = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+
+// Android app: write into Documents/GamesLibrary, or offer the share sheet if that folder is not writable.
+async function saveFileNative(blob, name, title) {
+  const { Filesystem, Share } = window.Capacitor.Plugins;
+  const data = await blob.text();
+  try {
+    await Filesystem.writeFile({ path: `GamesLibrary/${name}`, data, directory: 'DOCUMENTS', encoding: 'utf8', recursive: true });
+    toast(`Saved to Documents/GamesLibrary/${name}`, 4000);
+    return true;
+  } catch {
+    const { uri } = await Filesystem.writeFile({ path: name, data, directory: 'CACHE', encoding: 'utf8' });
+    try {
+      await Share.share({ title, files: [uri] });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 async function saveFile(blob, name, title) {
+  if (native) return saveFileNative(blob, name, title);
   const file = new File([blob], name, { type: blob.type });
   // On phones, the share sheet lets you save straight to Files / Drive / a USB stick.
   if (navigator.canShare && navigator.canShare({ files: [file] }) && /Android|iPhone|iPad/i.test(navigator.userAgent)) {
@@ -675,7 +697,7 @@ async function exportBackup() {
   await db.setSetting('lastBackupCount', items.length);
   renderBackupNag();
   renderMore();
-  toast(`Backup of ${items.length} items saved`);
+  if (!native) toast(`Backup of ${items.length} items saved`);
 }
 $('#btn-export').onclick = exportBackup;
 
@@ -776,7 +798,9 @@ async function start() {
   updateOnline();
   // Ask the browser not to evict the library when space runs low.
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  // Android file pickers often don't recognise .json, so let any file be chosen there.
+  if (native) $('#import-file').removeAttribute('accept');
+  if ('serviceWorker' in navigator && location.protocol !== 'file:' && !native) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 }

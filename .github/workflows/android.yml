@@ -1,0 +1,77 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Copy the web app into the Android project
+        run: |
+          npm ci
+          npm run sync
+
+      - name: Prepare the signing key
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          KS="$RUNNER_TEMP/release.keystore"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$KS"
+            echo "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=${KEY_ALIAS:-gameslibrary}" >> "$GITHUB_ENV"
+          else
+            # No key saved yet: sign with a one-off key. Installs fine, but the next
+            # build can't update it, so add the secrets for a permanent key.
+            echo "::warning::ANDROID_KEYSTORE_BASE64 secret is not set; using a temporary signing key"
+            keytool -genkeypair -keystore "$KS" -storepass temporary -keypass temporary -alias gameslibrary \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Games Library"
+            echo "ANDROID_KEYSTORE_PASSWORD=temporary" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=temporary" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=gameslibrary" >> "$GITHUB_ENV"
+            echo "TEMP_KEY=1" >> "$GITHUB_ENV"
+          fi
+          echo "ANDROID_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+
+      - name: Build the APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/games-library.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: games-library-apk
+          path: games-library.apk
+
+      - name: Publish as the latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Games Library 1.0.${{ github.run_number }}
+          make_latest: true
+          files: games-library.apk
+          body: |
+            Download `games-library.apk` on your Android phone and open it to install.
+            Android will ask you to allow installs from your browser or Files app the first time.
