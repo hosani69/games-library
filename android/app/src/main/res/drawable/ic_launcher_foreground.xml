@@ -1,0 +1,9 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Three books/cases on a shelf, inside the 66dp safe zone. -->
+    <path android:fillColor="#FFFFFF" android:pathData="M36,38h8v32h-8z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M48,42h7v28h-7z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M59,36h9v34h-9z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M34,72h40v3h-40z" />
+</vector>

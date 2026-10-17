@@ -11,7 +11,20 @@ A free phone app (installable web app) for cataloguing your games, consoles, sou
 - **Backups:** save a `.json` backup file (photos included) to Files/Drive/USB, restore it (replace or merge), or export a CSV spreadsheet. The app reminds you when a backup is overdue.
 - **Offline:** once opened, it works without internet; only lookups need a connection.
 
-## Run it
+## Android app (APK)
+
+The native Android app (Kotlin + Jetpack Compose) is in `android/`. It is camera-only: take one photo of one or several items, the phone finds each item and reads its title on-device (ML Kit, free and offline), then corrects the title from Wikipedia. You tick the items to keep, set condition, and optionally enter the total paid and shipping, which are split across the items. Games track progress (Not started, Playing, Finished). Backups are a single `.zip` (library + photos) saved wherever you choose.
+
+Every push to `main` builds the APK with GitHub Actions and publishes it as the latest release:
+https://github.com/hosani69/games-library/releases/latest/download/games-library.apk
+
+Builds are signed with a key kept in the repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS` (the key password is the same as the keystore password). Without those secrets each build uses a one-off key, so a new APK won't install over the old one.
+
+## Web version
+
+The files at the repository root are the earlier web version, served at https://hosani69.github.io/games-library/.
+
+## Run the web version
 
 It is plain HTML/CSS/JS with no build step. Host the folder on any free static host (GitHub Pages, Netlify, Cloudflare Pages), open it on your phone and choose **Add to Home Screen**. The camera needs HTTPS, which these hosts provide.
 

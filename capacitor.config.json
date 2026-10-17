@@ -1,8 +1,0 @@
-{
-  "appId": "io.github.hosani69.gameslibrary",
-  "appName": "Games Library",
-  "webDir": "www",
-  "android": {
-    "allowMixedContent": false
-  }
-}
