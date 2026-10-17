@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Games Library</title>
+  <meta name="description" content="Scan and catalogue your games, consoles, soundtracks and books. Everything stays on your device.">
+  <meta name="theme-color" content="#14161c">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Games Library</h1>
+    <span id="offline-badge" class="pill" hidden>Offline</span>
+  </header>
+
+  <main>
+    <!-- Library -->
+    <section id="view-library" class="view">
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search title, platform, barcode…" autocomplete="off">
+        <div class="chips" id="type-chips"></div>
+        <div class="filters">
+          <select id="filter-status" aria-label="Condition"></select>
+          <select id="filter-completion" aria-label="Completion"></select>
+          <select id="sort" aria-label="Sort">
+            <option value="added">Newest first</option>
+            <option value="title">Title A–Z</option>
+            <option value="cost">Highest cost</option>
+            <option value="release">Release date</option>
+            <option value="platform">Platform</option>
+          </select>
+        </div>
+      </div>
+      <div id="backup-nag" class="banner" hidden></div>
+      <p id="summary" class="summary"></p>
+      <div id="grid" class="grid"></div>
+      <div id="empty" class="empty" hidden>
+        <p class="big">Your shelf is empty</p>
+        <p>Scan the barcode on a game, console, soundtrack or book to add it.</p>
+        <button class="btn primary" data-action="scan">Scan a barcode</button>
+      </div>
+    </section>
+
+    <!-- Stats -->
+    <section id="view-stats" class="view" hidden></section>
+
+    <!-- More: backups, metadata update, settings -->
+    <section id="view-more" class="view" hidden>
+      <div class="card">
+        <h2>Backup</h2>
+        <p class="muted">Your library is stored only on this device. Save a backup file regularly and keep it somewhere safe (Files, a USB drive, your computer).</p>
+        <p id="backup-info" class="muted"></p>
+        <div class="row-btns">
+          <button class="btn primary" id="btn-export">Save backup file</button>
+          <button class="btn" id="btn-import">Restore from backup</button>
+        </div>
+        <input type="file" id="import-file" accept=".json,application/json" hidden>
+        <div class="row-btns">
+          <button class="btn" id="btn-csv">Export spreadsheet (CSV)</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Fill in missing info</h2>
+        <p class="muted">Looks up every item that is missing a cover, release date or creator in free public databases (Wikipedia, Wikidata, Open Library, MusicBrainz) and fills only the empty fields.</p>
+        <button class="btn" id="btn-bulk-meta">Update missing info</button>
+        <p id="bulk-progress" class="muted"></p>
+      </div>
+      <div class="card">
+        <h2>Settings</h2>
+        <label class="field">Currency
+          <input id="set-currency" maxlength="3" autocapitalize="characters" placeholder="USD">
+        </label>
+        <p id="storage-info" class="muted"></p>
+      </div>
+      <div class="card">
+        <h2>About</h2>
+        <p class="muted">Free, no account, no ads, no tracking. Works offline once installed. Metadata comes from Wikipedia, Wikidata, Open Library, Google Books, MusicBrainz, Cover Art Archive and UPCitemdb's free tier. Game lengths link out to HowLongToBeat.</p>
+        <p class="muted">Install it: open the browser menu and choose <b>Add to Home Screen</b> (or <b>Install app</b>).</p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button data-view="library" class="active"><span class="ico">📚</span>Library</button>
+    <button data-action="add" class="add-btn" aria-label="Add item"><span>＋</span></button>
+    <button data-view="stats"><span class="ico">📊</span>Stats</button>
+    <button data-view="more"><span class="ico">⚙️</span>More</button>
+  </nav>
+
+  <!-- Add menu -->
+  <div id="add-sheet" class="sheet-backdrop" hidden>
+    <div class="sheet small">
+      <h2>Add to library</h2>
+      <button class="btn primary block" data-action="scan">Scan barcode</button>
+      <button class="btn block" data-action="photo">Take a cover photo</button>
+      <button class="btn block" data-action="manual">Type it in</button>
+      <button class="btn ghost block" data-close>Cancel</button>
+    </div>
+  </div>
+
+  <!-- Item editor -->
+  <div id="editor" class="sheet-backdrop" hidden>
+    <form class="sheet" id="item-form" novalidate>
+      <div class="sheet-head">
+        <button type="button" class="btn ghost" data-close>Cancel</button>
+        <h2 id="editor-title">New item</h2>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+
+      <div id="dupe-warning" class="banner warn" hidden></div>
+
+      <div class="cover-row">
+        <div class="cover-box" id="cover-box"><span>No cover</span></div>
+        <div class="cover-actions">
+          <button type="button" class="btn" id="btn-cover-photo">Take photo</button>
+          <button type="button" class="btn" id="btn-cover-pick">Choose image</button>
+          <button type="button" class="btn ghost" id="btn-cover-remove">Remove</button>
+        </div>
+      </div>
+
+      <div class="seg" id="type-seg"></div>
+
+      <div class="field"><label for="f-title">Title</label>
+        <div class="with-btn">
+          <input id="f-title" name="title" required placeholder="e.g. The Legend of Zelda: Tears of the Kingdom">
+          <button type="button" class="btn" id="btn-find">Find info</button>
+        </div>
+      </div>
+
+      <div class="two">
+        <div class="field"><label for="f-barcode">Barcode</label>
+          <div class="with-btn">
+            <input id="f-barcode" name="barcode" inputmode="numeric" placeholder="EAN / UPC / ISBN">
+            <button type="button" class="btn icon" id="btn-scan-field" aria-label="Scan barcode">⌁</button>
+          </div>
+        </div>
+        <label class="field" data-show="game console ost accessory other">Platform / format
+          <input name="platform" list="platform-list" placeholder="e.g. PlayStation 5">
+        </label>
+      </div>
+
+      <div class="two">
+        <label class="field">Log date
+          <input name="logDate" type="date">
+        </label>
+        <label class="field">Condition
+          <select name="status" id="status-select"></select>
+        </label>
+      </div>
+
+      <div class="two">
+        <label class="field">Procurement cost
+          <input name="procurementCost" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0.00">
+        </label>
+        <label class="field">Shipping cost
+          <input name="shippingCost" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0.00">
+        </label>
+      </div>
+      <p class="muted total-line" id="total-line"></p>
+
+      <div class="two">
+        <label class="field">Bought from
+          <input name="store" placeholder="Store, website or person">
+        </label>
+        <label class="field">Region / edition
+          <input name="region" placeholder="e.g. PAL, Collector's Edition">
+        </label>
+      </div>
+
+      <fieldset class="completion" data-show="game">
+        <legend>Completion</legend>
+        <div class="seg wrap" id="completion-seg"></div>
+        <div class="two">
+          <label class="field">Progress <output id="percent-out">0%</output>
+            <input name="percent" type="range" min="0" max="100" step="5" value="0">
+          </label>
+          <label class="field">Hours played
+            <input name="hours" type="number" inputmode="decimal" min="0" step="0.5" placeholder="0">
+          </label>
+        </div>
+        <div class="two">
+          <label class="field">Started
+            <input name="started" type="date">
+          </label>
+          <label class="field">Finished
+            <input name="finished" type="date">
+          </label>
+        </div>
+        <div class="field">Rating
+          <div class="stars" id="stars"></div>
+        </div>
+        <a id="hltb-link" class="link" target="_blank" rel="noopener" hidden>How long to beat it? ↗</a>
+      </fieldset>
+
+      <details class="details" id="details" open>
+        <summary>Details</summary>
+        <div class="two">
+          <label class="field"><span id="creator-label">Developer</span>
+            <input name="creator">
+          </label>
+          <label class="field">Publisher / label
+            <input name="publisher">
+          </label>
+        </div>
+        <div class="two">
+          <label class="field">Release date
+            <input name="releaseDate" placeholder="YYYY-MM-DD or year">
+          </label>
+          <label class="field">Genre
+            <input name="genre">
+          </label>
+        </div>
+        <div class="two" data-show="book">
+          <label class="field">ISBN
+            <input name="isbn" inputmode="numeric">
+          </label>
+          <label class="field">Pages
+            <input name="pages" type="number" min="0">
+          </label>
+        </div>
+        <label class="field">Description
+          <textarea name="description" rows="4"></textarea>
+        </label>
+        <a id="source-link" class="link" target="_blank" rel="noopener" hidden></a>
+      </details>
+
+      <label class="field">Notes
+        <textarea name="notes" rows="3" placeholder="Anything else: missing manual, signed copy, gift…"></textarea>
+      </label>
+
+      <button type="button" class="btn danger block" id="btn-delete" hidden>Delete item</button>
+      <input type="file" id="cover-camera" accept="image/*" capture="environment" hidden>
+      <input type="file" id="cover-file" accept="image/*" hidden>
+    </form>
+  </div>
+
+  <!-- Metadata results -->
+  <div id="picker" class="sheet-backdrop" hidden>
+    <div class="sheet">
+      <div class="sheet-head">
+        <button type="button" class="btn ghost" data-close>Close</button>
+        <h2>Pick the match</h2>
+        <span></span>
+      </div>
+      <label class="check"><input type="checkbox" id="overwrite"> Replace fields I already filled</label>
+      <p id="picker-msg" class="muted"></p>
+      <div id="picker-list" class="cand-list"></div>
+    </div>
+  </div>
+
+  <!-- Barcode scanner -->
+  <div id="scanner" class="scanner" hidden>
+    <video playsinline muted></video>
+    <div class="scan-frame"></div>
+    <div class="scan-ui">
+      <p class="scan-msg"></p>
+      <form id="manual-form" class="with-btn">
+        <input id="manual-code" inputmode="numeric" placeholder="…or type the number">
+        <button class="btn primary" type="submit">Use</button>
+      </form>
+      <button class="btn ghost block scan-cancel" type="button">Cancel</button>
+    </div>
+  </div>
+
+  <div id="busy" class="busy" hidden><div class="spinner"></div><p id="busy-msg">Looking it up…</p></div>
+  <div id="toast" class="toast" hidden></div>
+  <datalist id="platform-list"></datalist>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
