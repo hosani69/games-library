@@ -12,10 +12,24 @@ import java.util.zip.ZipOutputStream
 const val DEFAULT_CURRENCY = "AED"
 
 enum class Kind(val label: String, val plural: String) {
-    GAME("Game", "Games"), CONSOLE("Console", "Consoles"), OST("Soundtrack", "Soundtracks"), BOOK("Book", "Books")
+    GAME("Game", "Games"), CONSOLE("Console", "Consoles"), OST("Soundtrack", "Soundtracks"), BOOK("Book", "Books"),
+    ACCESSORY("Accessory", "Accessories"), MISC("Misc", "Misc")
 }
 
 enum class Condition(val label: String) { NEW("New"), USED("Used"), DAMAGED("Damaged") }
+
+enum class Sort(val label: String) {
+    NEWEST("Newest added"), OLDEST("Oldest added"), TITLE_AZ("Title A–Z"), TITLE_ZA("Title Z–A"),
+    PAID_HIGH("Paid: high to low"), PAID_LOW("Paid: low to high"), VALUE_HIGH("Value: high to low"),
+    VALUE_LOW("Value: low to high"), RELEASE_NEW("Release: newest"), RELEASE_OLD("Release: oldest"),
+}
+
+enum class Group(val label: String) {
+    NONE("No grouping"), TYPE("Type"), PLATFORM("Platform"), CONDITION("Condition"), PROGRESS("Progress"),
+    GENRE("Genre"), CREATOR("Developer / author"), RELEASE_YEAR("Release year"), ADDED_MONTH("Month added"),
+}
+
+enum class ViewMode(val label: String) { GRID("Large grid"), SMALL_GRID("Small grid"), LIST("List"), COMPACT("Compact list") }
 
 enum class Progress(val label: String) { NOT_STARTED("Not started"), PLAYING("Playing"), FINISHED("Finished") }
 
@@ -32,6 +46,11 @@ data class Item(
     val logDate: String,        // yyyy-MM-dd, set automatically
     val progress: Progress,
     val info: String,           // filled from the internet, e.g. "2017 video game"
+    val platform: String = "",  // e.g. "PlayStation 5"; for books and soundtracks, the format
+    val creator: String = "",   // developer, author, composer or maker
+    val publisher: String = "",
+    val released: String = "",  // year or full date
+    val genre: String = "",
 ) {
     /** What was paid including shipping, in the currency it was paid in. */
     val total: Double get() = (cost ?: 0.0) + (shipping ?: 0.0)
@@ -41,7 +60,8 @@ data class Item(
         .put("condition", condition.name).put("cost", cost ?: JSONObject.NULL)
         .put("shipping", shipping ?: JSONObject.NULL).put("currency", currency)
         .put("market", market ?: JSONObject.NULL).put("logDate", logDate)
-        .put("progress", progress.name).put("info", info)
+        .put("progress", progress.name).put("info", info).put("platform", platform)
+        .put("creator", creator).put("publisher", publisher).put("released", released).put("genre", genre)
 
     companion object {
         fun fromJson(o: JSONObject) = Item(
@@ -57,6 +77,11 @@ data class Item(
             logDate = o.optString("logDate"),
             progress = enumOr(o.optString("progress"), Progress.NOT_STARTED),
             info = o.optString("info"),
+            platform = o.optString("platform"),
+            creator = o.optString("creator"),
+            publisher = o.optString("publisher"),
+            released = o.optString("released"),
+            genre = o.optString("genre"),
         )
     }
 }
@@ -151,6 +176,9 @@ data class Settings(
     val currency: String = DEFAULT_CURRENCY,
     val rates: Map<String, Double> = Currencies.fallbackRates,
     val ratesDate: String = "",
+    val sort: Sort = Sort.NEWEST,
+    val group: Group = Group.NONE,
+    val view: ViewMode = ViewMode.GRID,
 ) {
     fun rate(code: String): Double = rates[code] ?: 1.0
 
@@ -159,6 +187,7 @@ data class Settings(
         if (from == to) amount else amount / rate(from) * rate(to)
 
     fun toJson(): JSONObject = JSONObject().put("currency", currency).put("ratesDate", ratesDate)
+        .put("sort", sort.name).put("group", group.name).put("view", view.name)
         .put("rates", JSONObject().apply { rates.forEach { (k, v) -> put(k, v) } })
 
     companion object {
@@ -166,7 +195,11 @@ data class Settings(
             val r = o.optJSONObject("rates")
             val rates = Currencies.fallbackRates.toMutableMap()
             r?.keys()?.forEach { k -> r.optDouble(k).takeIf { !it.isNaN() && it > 0 }?.let { rates[k] = it } }
-            return Settings(o.optString("currency").ifBlank { DEFAULT_CURRENCY }, rates, o.optString("ratesDate"))
+            return Settings(
+                o.optString("currency").ifBlank { DEFAULT_CURRENCY }, rates, o.optString("ratesDate"),
+                enumOr(o.optString("sort"), Sort.NEWEST), enumOr(o.optString("group"), Group.NONE),
+                enumOr(o.optString("view"), ViewMode.GRID),
+            )
         }
     }
 }

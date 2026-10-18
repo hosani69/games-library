@@ -2,14 +2,11 @@ package io.github.hosani69.gameslibrary
 
 import android.app.Application
 import android.graphics.Bitmap
-import android.graphics.Rect
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -21,42 +18,17 @@ import java.io.File
 import java.time.LocalDate
 import java.util.UUID
 
-/** An item found in a photo, waiting for the user to confirm it. */
-data class Draft(
-    val id: String,
-    val photo: String,
-    val title: String,
-    val kind: Kind,
-    val condition: Condition = Condition.NEW,
-    val keep: Boolean = true,
-    val info: String = "",
+/** The item being added or edited, with the internet matches the user can pick from. */
+data class Editor(
+    val item: Item,
+    val isNew: Boolean,
+    val matches: List<Match> = emptyList(),
+    val searching: Boolean = false,
 )
-
-/** How the photo is split into items: automatic, or an even grid the user picks. */
-data class Layout(val cols: Int, val rows: Int) {
-    val label get() = when {
-        cols == 0 -> "Auto"
-        rows == 1 -> "$cols"
-        else -> "$cols×$rows"
-    }
-
-    companion object {
-        val AUTO = Layout(0, 0)
-        val choices = listOf(AUTO, Layout(1, 1), Layout(2, 1), Layout(3, 1), Layout(4, 1), Layout(5, 1), Layout(6, 1),
-            Layout(1, 2), Layout(2, 2), Layout(3, 2), Layout(4, 2), Layout(3, 3))
-    }
-}
 
 sealed interface Capture {
     data object Idle : Capture
     data class Working(val message: String) : Capture
-    data class Review(
-        val photo: Bitmap,
-        val boxes: List<Rect>,
-        val layout: Layout,
-        val drafts: List<Draft>,
-        val reading: Boolean = false,
-    ) : Capture
     data class Failed(val message: String) : Capture
 }
 
@@ -73,12 +45,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val _capture = MutableStateFlow<Capture>(Capture.Idle)
     val capture: StateFlow<Capture> = _capture
 
+    private val _editor = MutableStateFlow<Editor?>(null)
+    val editor: StateFlow<Editor?> = _editor
+
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
-    private var segmenter: Pair<Segmenter, Double>? = null
-    private var defaultKind = Kind.GAME
-    private var readJob: Job? = null
+    private var searchJob: Job? = null
 
     init {
         // Refresh exchange rates once a day when online.
@@ -86,107 +59,137 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun photoOf(item: Item) = library.photoFile(item)
-    fun photoOf(draft: Draft) = File(library.photos, draft.photo)
 
     fun newCaptureFile(): File =
         File(getApplication<Application>().cacheDir, "captures").apply { mkdirs() }.let { File(it, "capture.jpg") }
 
     fun messageShown() { _message.value = null }
 
-    /* ---------- Capture ---------- */
+    /* ---------- Adding from a picture ---------- */
 
-    /** Finds every item in the photo, reads its title and looks it up online. */
-    fun process(photoFile: File, kind: Kind) {
-        defaultKind = kind
-        _capture.value = Capture.Working("Finding items…")
+    /** Copies a picture chosen from the gallery, then reads it like a camera photo. */
+    fun processPicked(uri: Uri) {
+        val target = newCaptureFile()
+        _capture.value = Capture.Working("Reading the picture…")
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    getApplication<Application>().contentResolver.openInputStream(uri)!!.use { input ->
+                        target.outputStream().use { input.copyTo(it) }
+                    }
+                }.isSuccess
+            }
+            if (ok) process(target) else _capture.value = Capture.Failed("Couldn't open that picture.")
+        }
+    }
+
+    /**
+     * Reads the picture on the phone (text and what it looks like), makes the square image,
+     * then searches free public sources and fills in the fields.
+     */
+    fun process(photoFile: File) {
+        _capture.value = Capture.Working("Reading the picture…")
         viewModelScope.launch {
             try {
-                val (photo, boxes) = withContext(Dispatchers.Default) {
+                val id = UUID.randomUUID().toString()
+                val name = "$id.jpg"
+                val clues = withContext(Dispatchers.Default) {
                     val photo = Recognizer.loadUpright(photoFile)
-                    val seg = Recognizer.segmenter(photo)
-                    segmenter = seg
-                    photo to Recognizer.findItems(photo, seg.first, seg.second)
+                    savePhoto(Recognizer.square(photo), File(library.photos, name))
+                    val (lines, labels) = Recognizer.read(photo)
+                    Extractor.clues(lines, labels)
                 }
                 photoFile.delete()
-                read(photo, boxes, Layout.AUTO)
+                var item = Item(
+                    id = id, photo = name, title = clues.title, kind = clues.kind ?: Kind.GAME,
+                    condition = Condition.NEW, cost = null, shipping = null, currency = _settings.value.currency,
+                    market = null, logDate = LocalDate.now().toString(), progress = Progress.NOT_STARTED, info = "",
+                    platform = clues.platform, released = clues.year,
+                )
+                _capture.value = Capture.Working("Searching the internet…")
+                val matches = if (clues.title.isNotBlank()) runCatching { Lookup.search(clues.title, clues.kind) }.getOrDefault(emptyList()) else emptyList()
+                matches.firstOrNull()?.let { item = fill(item, Lookup.details(it), keepKind = clues.kind != null) }
+                _editor.value = Editor(item, isNew = true, matches = matches)
+                _capture.value = Capture.Idle
+                if (clues.title.isBlank()) _message.value = "Couldn't read a title. Type it and tap Search."
+                else if (matches.isEmpty()) _message.value = "No match online. Check the title and tap Search."
             } catch (e: Exception) {
-                _capture.value = Capture.Failed("Couldn't read that photo. Try again with more light.")
+                _capture.value = Capture.Failed("Couldn't read that picture. Try again with more light.")
             }
         }
     }
 
-    /** Re-splits the same photo with a grid the user picked, e.g. 3 items in a row. */
-    fun relayout(layout: Layout) {
-        val c = _capture.value as? Capture.Review ?: return
-        val seg = segmenter ?: return
+    fun dismissFailure() { _capture.value = Capture.Idle }
+
+    /* ---------- Editor ---------- */
+
+    fun open(item: Item) { _editor.value = Editor(item, isNew = false) }
+
+    fun edit(change: (Item) -> Item) = _editor.update { e -> e?.copy(item = change(e.item)) }
+
+    /** Searches again with the title as it is now (after the user fixed it, for example). */
+    fun searchAgain() {
+        val e = _editor.value ?: return
+        searchJob?.cancel()
+        _editor.value = e.copy(searching = true)
+        searchJob = viewModelScope.launch {
+            val matches = runCatching { Lookup.search(e.item.title, e.item.kind) }.getOrDefault(emptyList())
+            _editor.update { it?.copy(matches = matches, searching = false) }
+            if (matches.isEmpty()) _message.value = "No matches found online"
+        }
+    }
+
+    /** Uses a match the user picked: replaces the details, keeps what they paid and their notes. */
+    fun pick(m: Match) {
+        _editor.update { it?.copy(searching = true) }
         viewModelScope.launch {
-            val boxes = withContext(Dispatchers.Default) {
-                if (layout == Layout.AUTO) Recognizer.findItems(c.photo, seg.first, seg.second)
-                else seg.first.grid(layout.cols, layout.rows).map { it.scaled(seg.second).toRect() }
-            }
-            deleteDraftPhotos(c.drafts)
-            read(c.photo, boxes, layout)
+            val full = Lookup.details(m)
+            _editor.update { e -> e?.copy(item = fill(e.item, full, keepKind = false, overwrite = true), searching = false) }
         }
     }
 
-    private fun read(photo: Bitmap, boxes: List<Rect>, layout: Layout) {
-        readJob?.cancel()
-        val placeholders = boxes.map { Draft(UUID.randomUUID().toString(), "", "", defaultKind) }
-        _capture.value = Capture.Review(photo, boxes, layout, placeholders, reading = true)
-        readJob = viewModelScope.launch {
-            val drafts = withContext(Dispatchers.Default) {
-                boxes.zip(placeholders).map { (box, d) ->
-                    async {
-                        val cover = Recognizer.crop(photo, box)
-                        val name = "${d.id}.jpg"
-                        savePhoto(cover, File(library.photos, name))
-                        val text = runCatching { Recognizer.readTitle(cover) }.getOrDefault("")
-                        val match = runCatching { Lookup.find(text, defaultKind) }.getOrNull()
-                        d.copy(photo = name, title = match?.title ?: text, kind = match?.kind ?: defaultKind, info = match?.info ?: "")
-                    }
-                }.awaitAll()
-            }
-            _capture.update { c -> if (c is Capture.Review && c.boxes === boxes) c.copy(drafts = drafts, reading = false) else c }
+    fun saveEditor() {
+        val e = _editor.value ?: return
+        val item = e.item.copy(title = e.item.title.trim().ifBlank { "Untitled" })
+        if (e.isNew) {
+            save(_items.value + item)
+            _message.value = "Added “${item.title}”"
+        } else {
+            update(item)
         }
+        _editor.value = null
     }
 
-    fun editDraft(id: String, change: (Draft) -> Draft) {
-        _capture.update { c -> if (c is Capture.Review) c.copy(drafts = c.drafts.map { if (it.id == id) change(it) else it }) else c }
+    fun closeEditor() {
+        val e = _editor.value ?: return
+        if (e.isNew) library.photoFile(e.item).delete()
+        _editor.value = null
     }
 
-    /** Adds the kept drafts. The total paid and shipping are split evenly between them. */
-    fun addDrafts(totalCost: Double?, totalShipping: Double?, currency: String) {
-        val c = _capture.value as? Capture.Review ?: return
-        if (c.reading) return
-        val kept = c.drafts.filter { it.keep }
-        deleteDraftPhotos(c.drafts.filterNot { it.keep })
-        val n = kept.size.coerceAtLeast(1)
-        val today = LocalDate.now().toString()
-        val newItems = kept.map { d ->
-            Item(
-                id = d.id, photo = d.photo, title = d.title.ifBlank { "Untitled" }, kind = d.kind,
-                condition = d.condition, cost = totalCost?.div(n), shipping = totalShipping?.div(n),
-                currency = currency, market = null, logDate = today, progress = Progress.NOT_STARTED, info = d.info,
-            )
+    fun deleteEditing() {
+        val e = _editor.value ?: return
+        delete(e.item)
+        _editor.value = null
+    }
+
+    private fun fill(item: Item, m: Match, keepKind: Boolean, overwrite: Boolean = false): Item {
+        fun pick(old: String, new: String) = if (new.isNotBlank() && (overwrite || old.isBlank())) new else old
+        val platform = when {
+            item.platform.isNotBlank() && (!overwrite || m.platforms.isEmpty() || item.platform in m.platforms) -> item.platform
+            m.platforms.size == 1 -> m.platforms[0]
+            else -> item.platform
         }
-        save(_items.value + newItems)
-        closeCapture()
-        _message.value = if (newItems.size == 1) "Added 1 item" else "Added ${newItems.size} items"
+        return item.copy(
+            title = m.title.ifBlank { item.title },
+            kind = if (keepKind) item.kind else m.kind ?: item.kind,
+            info = pick(item.info, m.info),
+            creator = pick(item.creator, m.creator),
+            publisher = pick(item.publisher, m.publisher),
+            released = pick(item.released, m.released),
+            genre = pick(item.genre, m.genre),
+            platform = platform,
+        )
     }
-
-    fun discardCapture() {
-        (_capture.value as? Capture.Review)?.let { deleteDraftPhotos(it.drafts) }
-        closeCapture()
-    }
-
-    private fun closeCapture() {
-        readJob?.cancel()
-        segmenter = null
-        _capture.value = Capture.Idle
-    }
-
-    private fun deleteDraftPhotos(drafts: List<Draft>) =
-        drafts.filter { it.photo.isNotEmpty() }.forEach { File(library.photos, it.photo).delete() }
 
     /* ---------- Library ---------- */
 
@@ -216,13 +219,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val s = _settings.value
         val ok = withContext(Dispatchers.IO) {
             runCatching {
-                fun cell(v: Any?) = v?.toString()?.let { if (it.contains(',') || it.contains('"')) "\"" + it.replace("\"", "\"\"") + "\"" else it } ?: ""
+                fun cell(v: Any?) = v?.toString()?.let { if (it.contains(',') || it.contains('"') || it.contains('\n')) "\"" + it.replace("\"", "\"\"") + "\"" else it } ?: ""
                 fun amt(v: Double?) = v?.let { "%.2f".format(java.util.Locale.US, it) }
-                val header = listOf("Title", "Type", "Condition", "Progress", "Logged", "Paid currency", "Paid", "Shipping",
-                    "Total (${s.currency})", "Market value (${s.currency})", "Info")
+                val header = listOf("Title", "Type", "Platform", "Condition", "Progress", "Developer / author", "Publisher",
+                    "Released", "Genre", "Logged", "Paid currency", "Paid", "Shipping", "Total (${s.currency})",
+                    "Market value (${s.currency})", "Info")
                 val rows = _items.value.sortedBy { it.title.lowercase() }.map { i ->
-                    listOf(i.title, i.kind.label, i.condition.label, if (i.kind == Kind.GAME) i.progress.label else "", i.logDate,
-                        i.currency, amt(i.cost), amt(i.shipping), amt(s.convert(i.total, i.currency)), amt(i.market), i.info)
+                    listOf(i.title, i.kind.label, i.platform, i.condition.label, if (i.kind == Kind.GAME) i.progress.label else "",
+                        i.creator, i.publisher, i.released, i.genre, i.logDate, i.currency, amt(i.cost), amt(i.shipping),
+                        amt(s.convert(i.total, i.currency)), amt(i.market), i.info)
                         .joinToString(",") { cell(it) }
                 }
                 getApplication<Application>().contentResolver.openOutputStream(target)!!.use {
@@ -236,6 +241,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /* ---------- Settings ---------- */
 
     fun setCurrency(code: String) = setSettings(_settings.value.copy(currency = code))
+    fun setSort(v: Sort) = setSettings(_settings.value.copy(sort = v))
+    fun setGroup(v: Group) = setSettings(_settings.value.copy(group = v))
+    fun setView(v: ViewMode) = setSettings(_settings.value.copy(view = v))
 
     fun setRate(code: String, perMain: Double) {
         val s = _settings.value
@@ -265,8 +273,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun savePhoto(bmp: Bitmap, file: File) {
-        val scale = minOf(1f, 900f / maxOf(bmp.width, bmp.height))
-        val out = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp
-        file.outputStream().use { out.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+        file.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 88, it) }
     }
 }

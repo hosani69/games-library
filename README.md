@@ -13,7 +13,7 @@ A free phone app (installable web app) for cataloguing your games, consoles, sou
 
 ## Android app (APK)
 
-The native Android app (Kotlin + Jetpack Compose) is in `android/`. It is camera-only: take one photo of one or several items, the phone finds each item and reads its title on-device (ML Kit, free and offline), then corrects the title from Wikipedia. You tick the items to keep, set condition, and optionally enter the total paid and shipping, which are split across the items. Games track progress (Not started, Playing, Finished). Backups are a single `.zip` (library + photos) saved wherever you choose.
+The native Android app (Kotlin + Jetpack Compose) is in `android/`. Add an item with the camera or a picture from the gallery, one item per picture. The phone reads the picture (Google ML Kit text recognition and image labelling, on-device, free), works out the title, platform and type, then fills in the details from Wikipedia/Wikidata, Open Library and MusicBrainz. Images are stored square (1:1). The library can be searched, filtered (type, platform, condition, progress, missing value), sorted, grouped and shown as a grid, small grid, list or compact list. Analytics shows total cost, market value and breakdowns; Settings holds the main currency (AED by default), exchange rates and zip backups.
 
 Every push to `main` builds the APK with GitHub Actions and publishes it as the latest release:
 https://github.com/hosani69/games-library/releases/latest/download/games-library.apk

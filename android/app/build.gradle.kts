@@ -67,7 +67,7 @@ dependencies {
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("io.coil-kt:coil-compose:2.7.0")
 
-    // On-device recognition: finds several items in one photo and reads their covers. Free, no account.
-    implementation("com.google.mlkit:object-detection:17.0.2")
+    // On-device recognition: reads the text on the item and what it looks like. Free, no account.
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.mlkit:image-labeling:17.0.9")
 }
