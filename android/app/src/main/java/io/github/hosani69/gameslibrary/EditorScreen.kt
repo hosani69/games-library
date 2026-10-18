@@ -23,7 +23,11 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -47,6 +51,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import java.net.URLEncoder
 
@@ -88,6 +93,9 @@ fun EditorScreen(vm: LibraryViewModel, e: Editor, s: Settings) {
                         .background(MaterialTheme.colorScheme.surfaceVariant),
                 )
             }
+            Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
+                TextButton(onClick = vm::startCrop) { Text("Crop picture") }
+            }
 
             // Title with search: the picture's text is a starting point, the internet fills the rest.
             OutlinedTextField(
@@ -124,6 +132,25 @@ fun EditorScreen(vm: LibraryViewModel, e: Editor, s: Settings) {
             if (item.info.isNotBlank()) {
                 Text(item.info, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            val ratings = listOfNotNull(
+                item.criticScore.takeIf { it.isNotBlank() }?.let { sc -> "Critic score $sc" + item.criticSource.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty() },
+                item.ageRating.takeIf { it.isNotBlank() },
+            )
+            if (ratings.isNotEmpty()) {
+                Text(ratings.joinToString("   ·   "), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+            }
+            Section("My rating") {
+                Row {
+                    (1..5).forEach { n ->
+                        Text(
+                            if (n <= item.myRating) "★" else "☆",
+                            fontSize = 32.sp,
+                            color = if (n <= item.myRating) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.clickable { vm.edit { it.copy(myRating = if (it.myRating == n) 0 else n) } }.padding(end = 6.dp),
+                        )
+                    }
+                }
+            }
 
             Section("Type") { Choices(Kind.entries, { it == item.kind }, { it.label }) { k -> vm.edit { it.copy(kind = k) } } }
             Section("Condition") { Choices(Condition.entries, { it == item.condition }, { it.label }) { c -> vm.edit { it.copy(condition = c) } } }
@@ -151,7 +178,7 @@ fun EditorScreen(vm: LibraryViewModel, e: Editor, s: Settings) {
 
             Section("Details (filled from the internet, editable)") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Detail(if (item.kind == Kind.BOOK || item.kind == Kind.OST) "Format" else "Platform", item.platform) { v -> vm.edit { it.copy(platform = v) } }
+                    PlatformField(item.platform) { v -> vm.edit { it.copy(platform = v) } }
                     Detail(creatorLabel(item.kind), item.creator) { v -> vm.edit { it.copy(creator = v) } }
                     Detail("Publisher", item.publisher) { v -> vm.edit { it.copy(publisher = v) } }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -180,6 +207,29 @@ private fun creatorLabel(k: Kind) = when (k) {
     Kind.BOOK -> "Author"
     Kind.OST -> "Composer / artist"
     else -> "Maker"
+}
+
+/** The platform, picked from a fixed list; anything else is "Misc". */
+@Composable
+private fun PlatformField(value: String, onChange: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val current = value.takeIf { it in PLATFORMS } ?: MISC_PLATFORM
+    ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = it }) {
+        OutlinedTextField(
+            value = current,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Platform") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = open) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable),
+        )
+        ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            PLATFORMS.forEach { p ->
+                DropdownMenuItem(text = { Text(p) }, onClick = { onChange(p); open = false })
+            }
+        }
+    }
 }
 
 @Composable

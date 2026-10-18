@@ -123,6 +123,8 @@ fun SettingsTab(vm: LibraryViewModel, s: Settings, modifier: Modifier, onBackup:
     var editing by remember { mutableStateOf<String?>(null) }
     LazyColumn(modifier, contentPadding = PaddingValues(16.dp, 0.dp, 16.dp, 32.dp)) {
         item {
+            Section("Theme") { Choices(AppTheme.entries, { it == s.theme }, { it.label }) { vm.setTheme(it) } }
+            Spacer(Modifier.height(16.dp))
             Section("Currency") {
                 Row(Modifier.fillMaxWidth().clickable { picking = true }.padding(vertical = 10.dp)) {
                     Text("Main currency", Modifier.weight(1f))

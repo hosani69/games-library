@@ -74,6 +74,27 @@ object Recognizer {
         return out
     }
 
+    /** Shrinks a picture so its longest side is at most [maxSide]. */
+    fun fit(photo: Bitmap, maxSide: Int): Bitmap {
+        val f = maxSide.toFloat() / max(photo.width, photo.height)
+        if (f >= 1f) return photo
+        return Bitmap.createScaledBitmap(photo, max(1, (photo.width * f).toInt()), max(1, (photo.height * f).toInt()), true)
+    }
+
+    /**
+     * Cuts the square at ([left], [top]) with sides [side] (in [src] pixels) into a [size]x[size] image.
+     * The square may reach past the picture's edges; that part is filled with the edge colour.
+     */
+    fun cropSquare(src: Bitmap, left: Float, top: Float, side: Float, size: Int = 1000): Bitmap {
+        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        canvas.drawColor(src.getPixel(0, 0) or (0xFF shl 24))
+        val scale = size / side
+        val m = Matrix().apply { postTranslate(-left, -top); postScale(scale, scale) }
+        canvas.drawBitmap(src, m, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
+        return out
+    }
+
     /** Reads every line of text and what the picture looks like (labels such as "Toy"). */
     suspend fun read(image: Bitmap): Pair<List<TextLine>, List<String>> {
         val input = InputImage.fromBitmap(image, 0)

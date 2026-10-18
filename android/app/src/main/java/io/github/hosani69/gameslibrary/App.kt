@@ -59,11 +59,18 @@ private enum class Tab(val label: String) { LIBRARY("Library"), ANALYTICS("Analy
 
 @Composable
 fun App(vm: LibraryViewModel = viewModel()) {
+    val settings by vm.settings.collectAsState()
+    MinimalTheme(settings.theme) { Content(vm) }
+}
+
+@Composable
+private fun Content(vm: LibraryViewModel) {
     val context = LocalContext.current
     val items by vm.items.collectAsState()
     val settings by vm.settings.collectAsState()
     val capture by vm.capture.collectAsState()
     val editor by vm.editor.collectAsState()
+    val crop by vm.crop.collectAsState()
     val message by vm.message.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     var tab by rememberSaveable { mutableStateOf(Tab.LIBRARY) }
@@ -95,6 +102,11 @@ fun App(vm: LibraryViewModel = viewModel()) {
     }
 
     val e = editor
+    val cropping = crop
+    if (cropping != null) {
+        CropScreen(cropping, onRotate = vm::rotateCrop, onCancel = vm::cancelCrop, onDone = vm::applyCrop)
+        return
+    }
     when (val c = capture) {
         is Capture.Working -> WorkingScreen(c.message)
         is Capture.Failed -> FailedScreen(c.message, onRetry = { vm.dismissFailure(); takePhoto() }, onClose = vm::dismissFailure)

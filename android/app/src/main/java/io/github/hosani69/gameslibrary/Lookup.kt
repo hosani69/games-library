@@ -21,6 +21,9 @@ data class Match(
     val genre: String = "",
     val platforms: List<String> = emptyList(),
     val wikidata: String = "",
+    val criticScore: String = "",
+    val criticSource: String = "",
+    val ageRating: String = "",
 )
 
 /**
@@ -68,9 +71,22 @@ object Lookup {
                 val t = arr.optJSONObject(0)?.optJSONObject("mainsnak")?.optJSONObject("datavalue")?.optJSONObject("value")?.optString("time") ?: return ""
                 return t.removePrefix("+").take(10).replace("-00", "")
             }
-            val props = mapOf("dev" to "P178", "pub" to "P123", "genre" to "P136", "platform" to "P400", "maker" to "P176", "author" to "P50", "composer" to "P86")
+            val props = mapOf(
+                "dev" to "P178", "pub" to "P123", "genre" to "P136", "platform" to "P400", "maker" to "P176",
+                "author" to "P50", "composer" to "P86", "pegi" to "P908", "esrb" to "P852",
+            )
             val wanted = props.mapValues { ids(it.value) }
-            val all = wanted.values.flatten().distinct().take(50)
+            // Review scores (P444), each with the reviewer (P447) as a qualifier, e.g. "97/100" by Metacritic.
+            val scores = claims.optJSONArray("P444")?.let { arr ->
+                (0 until arr.length()).mapNotNull { k ->
+                    val c = arr.getJSONObject(k)
+                    val v = c.optJSONObject("mainsnak")?.optJSONObject("datavalue")?.optString("value") ?: return@mapNotNull null
+                    val by = c.optJSONObject("qualifiers")?.optJSONArray("P447")?.optJSONObject(0)
+                        ?.optJSONObject("datavalue")?.optJSONObject("value")?.optString("id").orEmpty()
+                    v to by
+                }
+            }.orEmpty()
+            val all = (wanted.values.flatten() + scores.map { it.second }.filter { it.isNotBlank() }).distinct().take(50)
             val labels = if (all.isEmpty()) emptyMap() else {
                 val e = get("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&props=labels&languages=en&ids=${all.joinToString("|")}")
                     .getJSONObject("entities")
@@ -78,12 +94,22 @@ object Lookup {
             }
             fun names(k: String) = wanted[k].orEmpty().mapNotNull { labels[it]?.takeIf { s -> s.isNotBlank() } }
             val creator = listOf("dev", "author", "composer", "maker").firstNotNullOfOrNull { k -> names(k).takeIf { it.isNotEmpty() } }.orEmpty()
+            // Prefer the aggregate sites, then any score out of 100, then whatever is there.
+            val best = scores.firstOrNull { labels[it.second] == "Metacritic" }
+                ?: scores.firstOrNull { labels[it.second] == "OpenCritic" }
+                ?: scores.firstOrNull { it.first.endsWith("/100") }
+                ?: scores.firstOrNull()
+            val pegi = names("pegi").firstOrNull()?.let { if (it.startsWith("PEGI", true)) it else "PEGI $it" }
+            val esrb = names("esrb").firstOrNull()?.let { if (it.startsWith("ESRB", true)) it else "ESRB $it" }
             m.copy(
                 creator = m.creator.ifBlank { creator.take(2).joinToString(", ") },
                 publisher = m.publisher.ifBlank { names("pub").take(2).joinToString(", ") },
                 genre = m.genre.ifBlank { names("genre").take(2).joinToString(", ") },
                 platforms = m.platforms.ifEmpty { names("platform") },
                 released = m.released.ifBlank { time("P577").ifBlank { time("P571") } },
+                criticScore = best?.first.orEmpty(),
+                criticSource = best?.second?.let { labels[it] }.orEmpty(),
+                ageRating = pegi ?: esrb ?: "",
             )
         }.getOrDefault(m)
     }

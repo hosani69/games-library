@@ -24,6 +24,7 @@ data class Editor(
     val isNew: Boolean,
     val matches: List<Match> = emptyList(),
     val searching: Boolean = false,
+    val startPhoto: String = item.photo, // the photo when the editor opened, to tidy up after cropping
 )
 
 sealed interface Capture {
@@ -47,6 +48,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _editor = MutableStateFlow<Editor?>(null)
     val editor: StateFlow<Editor?> = _editor
+
+    /** The picture being cropped, shown on the crop screen. */
+    private val _crop = MutableStateFlow<Bitmap?>(null)
+    val crop: StateFlow<Bitmap?> = _crop
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
@@ -93,9 +98,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val id = UUID.randomUUID().toString()
                 val name = "$id.jpg"
+                val original = "${id}_orig.jpg"
                 val clues = withContext(Dispatchers.Default) {
                     val photo = Recognizer.loadUpright(photoFile)
                     savePhoto(Recognizer.square(photo), File(library.photos, name))
+                    savePhoto(Recognizer.fit(photo, 1600), File(library.photos, original))
                     val (lines, labels) = Recognizer.read(photo)
                     Extractor.clues(lines, labels)
                 }
@@ -104,7 +111,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     id = id, photo = name, title = clues.title, kind = clues.kind ?: Kind.GAME,
                     condition = Condition.NEW, cost = null, shipping = null, currency = _settings.value.currency,
                     market = null, logDate = LocalDate.now().toString(), progress = Progress.NOT_STARTED, info = "",
-                    platform = clues.platform, released = clues.year,
+                    platform = normalizePlatform(clues.platform), released = clues.year, original = original,
                 )
                 _capture.value = Capture.Working("Searching the internet…")
                 val matches = if (clues.title.isNotBlank()) runCatching { Lookup.search(clues.title, clues.kind) }.getOrDefault(emptyList()) else emptyList()
@@ -151,6 +158,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun saveEditor() {
         val e = _editor.value ?: return
         val item = e.item.copy(title = e.item.title.trim().ifBlank { "Untitled" })
+        if (!e.isNew && item.photo != e.startPhoto) File(library.photos, e.startPhoto).delete()
         if (e.isNew) {
             save(_items.value + item)
             _message.value = "Added “${item.title}”"
@@ -162,8 +170,45 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun closeEditor() {
         val e = _editor.value ?: return
-        if (e.isNew) library.photoFile(e.item).delete()
+        if (e.isNew) {
+            deleteFiles(e.item)
+        } else if (e.item.photo != e.startPhoto) {
+            File(library.photos, e.item.photo).delete() // a crop that wasn't saved
+        }
         _editor.value = null
+    }
+
+    /* ---------- Cropping ---------- */
+
+    /** Opens the crop screen on the full original picture (or the current square for older items). */
+    fun startCrop() {
+        val item = _editor.value?.item ?: return
+        viewModelScope.launch {
+            val src = listOf(item.original, item.photo).map { File(library.photos, it) }.firstOrNull { it.isFile }
+            _crop.value = src?.let { f -> withContext(Dispatchers.Default) { runCatching { Recognizer.loadUpright(f, 1600) }.getOrNull() } }
+            if (_crop.value == null) _message.value = "Couldn't open the picture"
+        }
+    }
+
+    fun rotateCrop() {
+        val b = _crop.value ?: return
+        _crop.value = Bitmap.createBitmap(b, 0, 0, b.width, b.height, android.graphics.Matrix().apply { postRotate(90f) }, true)
+    }
+
+    fun cancelCrop() { _crop.value = null }
+
+    /** Saves the chosen square (in the picture's pixels; it may reach past the edges) as the item's image. */
+    fun applyCrop(left: Float, top: Float, side: Float) {
+        val src = _crop.value ?: return
+        val e = _editor.value ?: return
+        _crop.value = null
+        viewModelScope.launch {
+            val name = "${e.item.id}_${System.currentTimeMillis()}.jpg"
+            withContext(Dispatchers.Default) { savePhoto(Recognizer.cropSquare(src, left, top, side), File(library.photos, name)) }
+            val previous = e.item.photo
+            _editor.update { it?.copy(item = it.item.copy(photo = name)) }
+            if (previous != e.startPhoto) File(library.photos, previous).delete()
+        }
     }
 
     fun deleteEditing() {
@@ -174,10 +219,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun fill(item: Item, m: Match, keepKind: Boolean, overwrite: Boolean = false): Item {
         fun pick(old: String, new: String) = if (new.isNotBlank() && (overwrite || old.isBlank())) new else old
+        // The platform printed on the box wins; otherwise take the internet's when there is only one.
+        val found = m.platforms.map { normalizePlatform(it) }.filter { it != MISC_PLATFORM }.distinct()
         val platform = when {
-            item.platform.isNotBlank() && (!overwrite || m.platforms.isEmpty() || item.platform in m.platforms) -> item.platform
-            m.platforms.size == 1 -> m.platforms[0]
-            else -> item.platform
+            item.platform.isNotBlank() && item.platform != MISC_PLATFORM && (!overwrite || found.isEmpty() || item.platform in found) -> item.platform
+            found.size == 1 -> found[0]
+            else -> item.platform.ifBlank { MISC_PLATFORM }
         }
         return item.copy(
             title = m.title.ifBlank { item.title },
@@ -188,6 +235,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             released = pick(item.released, m.released),
             genre = pick(item.genre, m.genre),
             platform = platform,
+            criticScore = pick(item.criticScore, m.criticScore),
+            criticSource = if (m.criticScore.isNotBlank() && (overwrite || item.criticScore.isBlank())) m.criticSource else item.criticSource,
+            ageRating = pick(item.ageRating, m.ageRating),
         )
     }
 
@@ -196,9 +246,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun update(item: Item) = save(_items.value.map { if (it.id == item.id) item else it })
 
     fun delete(item: Item) {
-        library.photoFile(item).delete()
+        deleteFiles(item)
         save(_items.value.filterNot { it.id == item.id })
     }
+
+    private fun deleteFiles(item: Item) =
+        listOf(item.photo, item.original).filter { it.isNotBlank() }.forEach { File(library.photos, it).delete() }
 
     fun backup(target: Uri) = viewModelScope.launch {
         val ok = withContext(Dispatchers.IO) { runCatching { library.backup(_items.value, _settings.value, target) }.isSuccess }
@@ -221,11 +274,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             runCatching {
                 fun cell(v: Any?) = v?.toString()?.let { if (it.contains(',') || it.contains('"') || it.contains('\n')) "\"" + it.replace("\"", "\"\"") + "\"" else it } ?: ""
                 fun amt(v: Double?) = v?.let { "%.2f".format(java.util.Locale.US, it) }
-                val header = listOf("Title", "Type", "Platform", "Condition", "Progress", "Developer / author", "Publisher",
+                val header = listOf("Title", "Type", "Platform", "Condition", "Progress", "My rating", "Critic score", "Age rating", "Developer / author", "Publisher",
                     "Released", "Genre", "Logged", "Paid currency", "Paid", "Shipping", "Total (${s.currency})",
                     "Market value (${s.currency})", "Info")
                 val rows = _items.value.sortedBy { it.title.lowercase() }.map { i ->
                     listOf(i.title, i.kind.label, i.platform, i.condition.label, if (i.kind == Kind.GAME) i.progress.label else "",
+                        if (i.myRating > 0) i.myRating else "", listOf(i.criticScore, i.criticSource).filter { it.isNotBlank() }.joinToString(" "), i.ageRating,
                         i.creator, i.publisher, i.released, i.genre, i.logDate, i.currency, amt(i.cost), amt(i.shipping),
                         amt(s.convert(i.total, i.currency)), amt(i.market), i.info)
                         .joinToString(",") { cell(it) }
@@ -244,6 +298,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun setSort(v: Sort) = setSettings(_settings.value.copy(sort = v))
     fun setGroup(v: Group) = setSettings(_settings.value.copy(group = v))
     fun setView(v: ViewMode) = setSettings(_settings.value.copy(view = v))
+    fun setTheme(v: AppTheme) = setSettings(_settings.value.copy(theme = v))
 
     fun setRate(code: String, perMain: Double) {
         val s = _settings.value

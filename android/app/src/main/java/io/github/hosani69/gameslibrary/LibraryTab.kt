@@ -67,6 +67,16 @@ data class Filters(
 
 private fun <T> Set<T>.toggle(v: T) = if (v in this) this - v else this + v
 
+/** A review score such as "97/100", "9.5/10" or "85%" as a number out of 100. */
+fun criticPercent(score: String): Double? {
+    val m = Regex("(\\d+(?:\\.\\d+)?)\\s*(?:/\\s*(\\d+(?:\\.\\d+)?)|%)?").find(score) ?: return null
+    val v = m.groupValues[1].toDoubleOrNull() ?: return null
+    val of = m.groupValues[2].toDoubleOrNull()?.takeIf { it > 0 } ?: 100.0
+    return v / of * 100
+}
+
+fun ratingLabel(n: Int) = if (n > 0) "★".repeat(n) + "☆".repeat(5 - n) else "Not rated"
+
 /** Filters, sorts and groups the library. Returns (group title, items) pairs; title is null when not grouped. */
 fun browse(items: List<Item>, query: String, f: Filters, s: Settings): List<Pair<String?, List<Item>>> {
     val words = query.lowercase().split(Regex("\\s+")).filter { it.isNotBlank() }
@@ -93,6 +103,8 @@ fun browse(items: List<Item>, query: String, f: Filters, s: Settings): List<Pair
         Sort.VALUE_LOW -> shown.sortedBy { value(it) }
         Sort.RELEASE_NEW -> shown.sortedByDescending { it.released.ifBlank { "0" } }
         Sort.RELEASE_OLD -> shown.sortedBy { it.released.ifBlank { "9999" } }
+        Sort.MY_RATING -> shown.sortedWith(compareByDescending<Item> { it.myRating }.thenBy { it.title.lowercase() })
+        Sort.CRITIC -> shown.sortedWith(compareByDescending<Item> { criticPercent(it.criticScore) ?: -1.0 }.thenBy { it.title.lowercase() })
     }
     if (s.group == Group.NONE) return listOf(null to sorted)
     val unknown = "Unknown"
@@ -103,6 +115,7 @@ fun browse(items: List<Item>, query: String, f: Filters, s: Settings): List<Pair
         Group.PROGRESS -> { i -> if (i.kind == Kind.GAME) i.progress.label else "Not a game" }
         Group.GENRE -> { i -> i.genre.substringBefore(',').trim().ifBlank { unknown }.replaceFirstChar { it.uppercase() } }
         Group.CREATOR -> { i -> i.creator.substringBefore(',').trim().ifBlank { unknown } }
+        Group.MY_RATING -> { i -> ratingLabel(i.myRating) }
         Group.RELEASE_YEAR -> { i -> year(i).ifBlank { unknown } }
         Group.ADDED_MONTH -> { i ->
             runCatching { YearMonth.parse(i.logDate.take(7)).format(DateTimeFormatter.ofPattern("MMMM yyyy")) }.getOrDefault(unknown)
@@ -114,6 +127,7 @@ fun browse(items: List<Item>, query: String, f: Filters, s: Settings): List<Pair
         Group.TYPE -> Kind.entries.map { it.plural }
         Group.CONDITION -> Condition.entries.map { it.label }
         Group.PROGRESS -> Progress.entries.map { it.label } + "Not a game"
+        Group.MY_RATING -> (5 downTo 0).map { ratingLabel(it) }
         Group.RELEASE_YEAR -> groups.keys.filter { it != unknown }.sortedDescending() + unknown
         Group.ADDED_MONTH -> groups.keys.sortedByDescending { k -> sorted.first { key(it) == k }.logDate }
         else -> groups.keys.filter { it != unknown }.sortedBy { it.lowercase() } + unknown
@@ -241,6 +255,7 @@ private fun subtitle(i: Item): String = buildList {
     add(i.platform.ifBlank { i.kind.label })
     add(i.condition.label)
     if (i.kind == Kind.GAME && i.progress != Progress.NOT_STARTED) add(i.progress.label)
+    if (i.myRating > 0) add("★".repeat(i.myRating))
 }.joinToString(" · ")
 
 @Composable

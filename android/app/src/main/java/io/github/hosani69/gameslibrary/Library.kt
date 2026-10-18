@@ -22,11 +22,37 @@ enum class Sort(val label: String) {
     NEWEST("Newest added"), OLDEST("Oldest added"), TITLE_AZ("Title A–Z"), TITLE_ZA("Title Z–A"),
     PAID_HIGH("Paid: high to low"), PAID_LOW("Paid: low to high"), VALUE_HIGH("Value: high to low"),
     VALUE_LOW("Value: low to high"), RELEASE_NEW("Release: newest"), RELEASE_OLD("Release: oldest"),
+    MY_RATING("My rating"), CRITIC("Critic score"),
 }
 
 enum class Group(val label: String) {
     NONE("No grouping"), TYPE("Type"), PLATFORM("Platform"), CONDITION("Condition"), PROGRESS("Progress"),
-    GENRE("Genre"), CREATOR("Developer / author"), RELEASE_YEAR("Release year"), ADDED_MONTH("Month added"),
+    GENRE("Genre"), CREATOR("Developer / author"), MY_RATING("My rating"), RELEASE_YEAR("Release year"), ADDED_MONTH("Month added"),
+}
+
+enum class AppTheme(val label: String) { MONO("Mono"), OCEAN("Ocean"), FOREST("Forest"), SUNSET("Sunset") }
+
+/** The platforms offered in the drop-down. "Misc" is the default for anything else. */
+const val MISC_PLATFORM = "Misc"
+val PLATFORMS = listOf(
+    "Nintendo Switch 2", "Nintendo Switch", "Wii U", "Wii", "GameCube", "Nintendo 64", "SNES", "NES",
+    "Nintendo 3DS", "Nintendo DS", "Game Boy Advance", "Game Boy Color", "Game Boy",
+    "PlayStation 5", "PlayStation 4", "PlayStation 3", "PlayStation 2", "PlayStation", "PS Vita", "PSP",
+    "Xbox Series X|S", "Xbox One", "Xbox 360", "Xbox",
+    "Dreamcast", "Sega Saturn", "Mega Drive / Genesis", "Master System", "Game Gear",
+    "PC", "Steam Deck", "Mobile", "Retro / other console", MISC_PLATFORM,
+)
+
+/** Maps a platform name from the box or the internet onto the drop-down list. */
+fun normalizePlatform(name: String): String {
+    if (name.isBlank()) return MISC_PLATFORM
+    PLATFORMS.firstOrNull { it.equals(name, ignoreCase = true) }?.let { return it }
+    if (Regex("windows|linux|mac ?os|steam", RegexOption.IGNORE_CASE).containsMatchIn(name)) return "PC"
+    if (Regex("android|ios|iphone", RegexOption.IGNORE_CASE).containsMatchIn(name)) return "Mobile"
+    if (Regex("series x|series s", RegexOption.IGNORE_CASE).containsMatchIn(name)) return "Xbox Series X|S"
+    return Extractor.platforms.firstOrNull { (re, _) -> re.containsMatchIn(name) }?.second
+        ?.let { found -> PLATFORMS.firstOrNull { it == found } }
+        ?: MISC_PLATFORM
 }
 
 enum class ViewMode(val label: String) { GRID("Large grid"), SMALL_GRID("Small grid"), LIST("List"), COMPACT("Compact list") }
@@ -51,6 +77,11 @@ data class Item(
     val publisher: String = "",
     val released: String = "",  // year or full date
     val genre: String = "",
+    val original: String = "",  // the full picture before cropping, so it can be cropped again
+    val criticScore: String = "", // e.g. "97/100", from Wikidata
+    val criticSource: String = "", // e.g. "Metacritic"
+    val ageRating: String = "",  // e.g. "PEGI 12"
+    val myRating: Int = 0,       // personal rating, 0 (none) to 5 stars
 ) {
     /** What was paid including shipping, in the currency it was paid in. */
     val total: Double get() = (cost ?: 0.0) + (shipping ?: 0.0)
@@ -62,6 +93,8 @@ data class Item(
         .put("market", market ?: JSONObject.NULL).put("logDate", logDate)
         .put("progress", progress.name).put("info", info).put("platform", platform)
         .put("creator", creator).put("publisher", publisher).put("released", released).put("genre", genre)
+        .put("original", original).put("criticScore", criticScore).put("criticSource", criticSource)
+        .put("ageRating", ageRating).put("myRating", myRating)
 
     companion object {
         fun fromJson(o: JSONObject) = Item(
@@ -77,11 +110,16 @@ data class Item(
             logDate = o.optString("logDate"),
             progress = enumOr(o.optString("progress"), Progress.NOT_STARTED),
             info = o.optString("info"),
-            platform = o.optString("platform"),
+            platform = normalizePlatform(o.optString("platform")),
             creator = o.optString("creator"),
             publisher = o.optString("publisher"),
             released = o.optString("released"),
             genre = o.optString("genre"),
+            original = o.optString("original"),
+            criticScore = o.optString("criticScore"),
+            criticSource = o.optString("criticSource"),
+            ageRating = o.optString("ageRating"),
+            myRating = o.optInt("myRating").coerceIn(0, 5),
         )
     }
 }
@@ -123,10 +161,10 @@ class Library(private val context: Context) {
                 zip.putNextEntry(ZipEntry("settings.json"))
                 zip.write(settings.toJson().toString().toByteArray())
                 zip.closeEntry()
-                for (item in items) {
-                    val photo = photoFile(item)
+                for (name in items.flatMap { listOf(it.photo, it.original) }.filter { it.isNotBlank() }) {
+                    val photo = File(photos, name)
                     if (!photo.exists()) continue
-                    zip.putNextEntry(ZipEntry("photos/${item.photo}"))
+                    zip.putNextEntry(ZipEntry("photos/$name"))
                     photo.inputStream().use { it.copyTo(zip) }
                     zip.closeEntry()
                 }
@@ -179,6 +217,7 @@ data class Settings(
     val sort: Sort = Sort.NEWEST,
     val group: Group = Group.NONE,
     val view: ViewMode = ViewMode.GRID,
+    val theme: AppTheme = AppTheme.MONO,
 ) {
     fun rate(code: String): Double = rates[code] ?: 1.0
 
@@ -187,7 +226,7 @@ data class Settings(
         if (from == to) amount else amount / rate(from) * rate(to)
 
     fun toJson(): JSONObject = JSONObject().put("currency", currency).put("ratesDate", ratesDate)
-        .put("sort", sort.name).put("group", group.name).put("view", view.name)
+        .put("sort", sort.name).put("group", group.name).put("view", view.name).put("theme", theme.name)
         .put("rates", JSONObject().apply { rates.forEach { (k, v) -> put(k, v) } })
 
     companion object {
@@ -198,7 +237,7 @@ data class Settings(
             return Settings(
                 o.optString("currency").ifBlank { DEFAULT_CURRENCY }, rates, o.optString("ratesDate"),
                 enumOr(o.optString("sort"), Sort.NEWEST), enumOr(o.optString("group"), Group.NONE),
-                enumOr(o.optString("view"), ViewMode.GRID),
+                enumOr(o.optString("view"), ViewMode.GRID), enumOr(o.optString("theme"), AppTheme.MONO),
             )
         }
     }
